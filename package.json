@@ -1,0 +1,24 @@
+{
+  "name": "worksection-notifier",
+  "version": "1.0.0",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "seed": "tsx scripts/seed-employees.ts",
+    "register-worksection-webhook": "tsx scripts/register-worksection-webhook.ts",
+    "set-telegram-webhook": "tsx scripts/set-telegram-webhook.ts"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@vercel/node": "^3.2.0",
+    "dotenv": "^16.4.5",
+    "tsx": "^4.16.0",
+    "typescript": "^5.5.0"
+  }
+}
