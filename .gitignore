@@ -3,3 +3,4 @@ node_modules/
 .env.local
 .vercel/
 *.log
+claude-code-prompt.md
