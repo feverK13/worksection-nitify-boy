@@ -47,6 +47,7 @@ function extractTaskId(page: string | undefined, objectId: number | string | und
 
 function eventLabel(action: string, objType: string): string {
   if (action === "post" && objType === "comment") return "Новий коментар";
+  if (action === "post" && objType === "task") return "Задачу створено";
   if (action === "update" && objType === "task") return "Задачу оновлено";
   if (action === "close" && objType === "task") return "Задачу закрито";
   if (action === "reopen" && objType === "task") return "Задачу повторно відкрито";
@@ -54,23 +55,63 @@ function eventLabel(action: string, objType: string): string {
   return `${action} ${objType}`.trim();
 }
 
+// A single-line, human-scannable summary of every decision taken for one event.
+// Populated as processWebhookEvent runs and returned to the caller, which logs
+// it once (under DEBUG_LOG_RAW_PAYLOADS) so the whole event reads at a glance.
+export interface EventTrace {
+  action: string;
+  objectType: string;
+  objectId: string | number | null;
+  taskId: string | null;
+  actorId: string | null;
+  actorName: string;
+  currentResponsibleId: string | null;
+  currentResponsibleFrom: "payload" | "tasks_state" | "api_fallback" | null;
+  mentionedEmployeeIds: string[];
+  assignmentChange: { from: string | null; to: string | null } | null;
+  notifiedEmployeeIds: string[];
+  skippedReasons: string[];
+}
+
 // Processes a single webhook event and fires the (deduplicated) notifications.
 // `employees` is the list of linked employees, fetched once per batch.
+// Returns a per-event trace describing every routing decision made.
 export async function processWebhookEvent(
   event: WsWebhookEvent,
   employees: EmployeeRow[]
-): Promise<void> {
+): Promise<EventTrace> {
   const action = event.action ?? "";
   const objType = event.object?.type ?? "";
   const taskId = extractTaskId(event.object?.page, event.object?.id);
+
+  const trace: EventTrace = {
+    action,
+    objectType: objType,
+    objectId: event.object?.id ?? null,
+    taskId,
+    actorId: null,
+    actorName: "Невідомий користувач",
+    currentResponsibleId: null,
+    currentResponsibleFrom: null,
+    mentionedEmployeeIds: [],
+    assignmentChange: null,
+    notifiedEmployeeIds: [],
+    skippedReasons: [],
+  };
+  // Push a reason a given recipient was NOT notified (for Vercel Logs triage).
+  const skip = (reason: string) => trace.skippedReasons.push(reason);
+
   if (!taskId) {
     console.warn("No task id in event — skipping:", JSON.stringify(event));
-    return;
+    trace.skippedReasons.push("no_task_id");
+    return trace;
   }
 
   const actor = event.user_from ?? null;
   const actorId = actor?.id != null ? String(actor.id) : null;
   const actorName = actor?.name ?? "Невідомий користувач";
+  trace.actorId = actorId;
+  trace.actorName = actorName;
   const rawText = typeof event.new?.text === "string" ? event.new.text : "";
 
   const domain = env("WS_DOMAIN");
@@ -147,11 +188,16 @@ export async function processWebhookEvent(
     const newTo = event.new.user_to;
     const oldTo = event.old?.user_to ?? null;
     if (oldTo && String(newTo.id) !== String(oldTo.id)) {
+      trace.assignmentChange = { from: String(oldTo.id), to: String(newTo.id) };
       const taskName = await resolveTaskName();
       // Newly assigned
       if (String(newTo.id) !== ANYONE_ID) {
         const emp = findEmployee(newTo.id);
-        if (emp && emp.ws_user_id && emp.ws_user_id !== actorId) {
+        if (!emp || !emp.ws_user_id) {
+          skip("assign_target_not_linked");
+        } else if (emp.ws_user_id === actorId) {
+          skip("actor_is_recipient");
+        } else {
           await deliver(
             emp,
             `✅ Вас призначено відповідальним за задачу «${taskName}»\n👤 ${actorName}\n🔗 ${link}`
@@ -162,13 +208,44 @@ export async function processWebhookEvent(
       // Unassigned
       if (String(oldTo.id) !== ANYONE_ID) {
         const emp = findEmployee(oldTo.id);
-        if (emp && emp.ws_user_id && emp.ws_user_id !== actorId && !notified.has(emp.ws_user_id)) {
+        if (!emp || !emp.ws_user_id) {
+          skip("unassign_target_not_linked");
+        } else if (emp.ws_user_id === actorId) {
+          skip("actor_is_recipient");
+        } else if (notified.has(emp.ws_user_id)) {
+          skip("already_notified");
+        } else {
           await deliver(
             emp,
             `➖ З вас знято відповідальність за задачу «${taskName}»\n👤 ${actorName}\n🔗 ${link}`
           );
           notified.add(emp.ws_user_id);
         }
+      }
+    }
+  }
+
+  // --- Rule 2 (post): responsible set on a freshly created task ---
+  // A newly created task can carry user_to without any `old` — the person was
+  // assigned the moment the task was created. Treat it as an assignment too.
+  if (action === "post" && objType === "task" && event.new?.user_to) {
+    const newTo = event.new.user_to;
+    if (String(newTo.id) !== ANYONE_ID) {
+      trace.assignmentChange = { from: null, to: String(newTo.id) };
+      const emp = findEmployee(newTo.id);
+      if (!emp || !emp.ws_user_id) {
+        skip("assign_target_not_linked");
+      } else if (emp.ws_user_id === actorId) {
+        skip("actor_is_recipient");
+      } else if (notified.has(emp.ws_user_id)) {
+        skip("already_notified");
+      } else {
+        const taskName = await resolveTaskName();
+        await deliver(
+          emp,
+          `✅ Вас призначено відповідальним за задачу «${taskName}»\n👤 ${actorName}\n🔗 ${link}`
+        );
+        notified.add(emp.ws_user_id);
       }
     }
   }
@@ -180,7 +257,19 @@ export async function processWebhookEvent(
     const ellipsis = rawText.trim().length > 100 ? "…" : "";
     for (const emp of resolveMentions(rawText, employees)) {
       const wsId = emp.ws_user_id;
-      if (!wsId || notified.has(wsId) || wsId === actorId) continue;
+      if (wsId) trace.mentionedEmployeeIds.push(wsId);
+      if (!wsId) {
+        skip("mentioned_employee_not_linked");
+        continue;
+      }
+      if (wsId === actorId) {
+        skip("actor_is_recipient");
+        continue;
+      }
+      if (notified.has(wsId)) {
+        skip("already_notified");
+        continue;
+      }
       const taskName = await resolveTaskName();
       await deliver(
         emp,
@@ -194,14 +283,17 @@ export async function processWebhookEvent(
   let currentResponsible: WsWebhookUser | null = null;
   if (event.new?.user_to && String(event.new.user_to.id) !== ANYONE_ID) {
     currentResponsible = event.new.user_to;
+    trace.currentResponsibleFrom = "payload";
   } else {
     const ts = await loadTaskState();
     if (ts?.user_to_id && ts.user_to_id !== ANYONE_ID) {
       currentResponsible = { id: ts.user_to_id };
+      trace.currentResponsibleFrom = "tasks_state";
     } else {
       const t = await loadApiTask();
       if (t?.user_to?.id && String(t.user_to.id) !== ANYONE_ID) {
         currentResponsible = t.user_to;
+        trace.currentResponsibleFrom = "api_fallback";
       }
       // Cache the API result for next time.
       if (t) {
@@ -217,8 +309,15 @@ export async function processWebhookEvent(
   }
 
   if (currentResponsible) {
+    trace.currentResponsibleId = String(currentResponsible.id);
     const emp = findEmployee(currentResponsible.id);
-    if (emp && emp.ws_user_id && !notified.has(emp.ws_user_id) && emp.ws_user_id !== actorId) {
+    if (!emp || !emp.ws_user_id) {
+      skip("responsible_not_linked");
+    } else if (emp.ws_user_id === actorId) {
+      skip("actor_is_recipient");
+    } else if (notified.has(emp.ws_user_id)) {
+      skip("already_notified");
+    } else {
       const taskName = await resolveTaskName();
       await deliver(
         emp,
@@ -226,6 +325,8 @@ export async function processWebhookEvent(
       );
       notified.add(emp.ws_user_id);
     }
+  } else {
+    skip("no_responsible");
   }
 
   // --- Update tasks_state after a task event that carries user_to ---
@@ -238,4 +339,7 @@ export async function processWebhookEvent(
       user_to_email: newTo.email ?? null,
     });
   }
+
+  trace.notifiedEmployeeIds = [...notified];
+  return trace;
 }

@@ -57,9 +57,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       if (error) throw new Error(`employees select failed: ${error.message}`);
       const employees = (empRows ?? []) as EmployeeRow[];
 
+      const DEBUG_LOG_RAW_PAYLOADS = process.env.DEBUG_LOG_RAW_PAYLOADS === "true";
       for (const event of events) {
         try {
-          await processWebhookEvent(event, employees);
+          const trace = await processWebhookEvent(event, employees);
+          // One-line, whole-event summary — reads at a glance in Vercel Logs.
+          if (DEBUG_LOG_RAW_PAYLOADS) {
+            console.log("worksection event trace:", JSON.stringify(trace));
+          }
         } catch (e) {
           console.error("worksection event processing failed:", e, JSON.stringify(event));
         }
