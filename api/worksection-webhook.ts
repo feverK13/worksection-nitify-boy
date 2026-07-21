@@ -1,3 +1,4 @@
+console.log("=== WEBHOOK CALLED ===", new Date().toISOString());
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { logWebhook, supabase, EmployeeRow } from "../lib/supabaseClient";
 import { processWebhookEvent, WsWebhookEvent } from "../lib/notifier";
