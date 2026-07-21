@@ -19,6 +19,10 @@ export interface TaskStateRow {
   user_to_id: string | null;
   user_to_email: string | null;
   status: string | null;
+  // Current "status" tag (a tag from a group of type `status`), tracked by the
+  // polling endpoint — this is NOT delivered via webhooks. See api/poll-status-changes.ts.
+  status_tag_id: string | null;
+  status_tag_name: string | null;
 }
 
 // service_role key, server-side only; RLS on the tables has no policies,

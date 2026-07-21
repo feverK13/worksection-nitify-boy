@@ -82,6 +82,39 @@ async function wsRequest<T>(params: Record<string, string>): Promise<T> {
     : new Error(`Worksection request failed: ${params.action}`);
 }
 
+// A task as returned by get_all_tasks with extra=tags. `tags` is an object
+// { tagId: tagName } that mixes BOTH status-tags and label-tags with no type
+// marker — callers must intersect the keys with the known status tag ids
+// (see getStatusTagIds) to isolate the status. The key is absent when the task
+// has no tags at all.
+export interface WsTaskWithTags extends WsTask {
+  priority?: string;
+  date_added?: string;
+  tags?: Record<string, string>;
+}
+
+// Empirically verified against production: get_all_tasks DOES honour
+// extra=tags, so every active task's tags come back in a single request
+// (no per-task get_task fan-out, which would hit the 1 req/sec limit).
+export function getAllTasksWithTags(): Promise<WsTaskWithTags[]> {
+  return wsRequest<WsTaskWithTags[]>({
+    action: "get_all_tasks",
+    extra: "tags",
+    filter: "active",
+  });
+}
+
+// The set of tag ids that belong to groups of type `status` (as opposed to
+// plain `label` tags). Note the API returns numeric ids while task.tags keys
+// are strings, so we normalise to string. One extra request per poll — fine,
+// since polling runs only every few minutes.
+export function getStatusTagIds(): Promise<Set<string>> {
+  return wsRequest<Array<{ id: string | number }>>({
+    action: "get_task_tags",
+    type: "status",
+  }).then((tags) => new Set(tags.map((t) => String(t.id))));
+}
+
 export function getTask(taskId: string): Promise<WsTask> {
   return wsRequest<WsTask>({
     action: "get_task",
