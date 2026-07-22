@@ -197,6 +197,8 @@ export async function processWebhookEvent(
           skip("assign_target_not_linked");
         } else if (emp.ws_user_id === actorId) {
           skip("actor_is_recipient");
+        } else if (!emp.notify_assignment) {
+          skip("category_disabled");
         } else {
           await deliver(
             emp,
@@ -214,6 +216,8 @@ export async function processWebhookEvent(
           skip("actor_is_recipient");
         } else if (notified.has(emp.ws_user_id)) {
           skip("already_notified");
+        } else if (!emp.notify_assignment) {
+          skip("category_disabled");
         } else {
           await deliver(
             emp,
@@ -239,6 +243,8 @@ export async function processWebhookEvent(
         skip("actor_is_recipient");
       } else if (notified.has(emp.ws_user_id)) {
         skip("already_notified");
+      } else if (!emp.notify_assignment) {
+        skip("category_disabled");
       } else {
         const taskName = await resolveTaskName();
         await deliver(
@@ -268,6 +274,10 @@ export async function processWebhookEvent(
       }
       if (notified.has(wsId)) {
         skip("already_notified");
+        continue;
+      }
+      if (!emp.notify_mentions) {
+        skip("category_disabled");
         continue;
       }
       const taskName = await resolveTaskName();
@@ -317,6 +327,8 @@ export async function processWebhookEvent(
       skip("actor_is_recipient");
     } else if (notified.has(emp.ws_user_id)) {
       skip("already_notified");
+    } else if (!emp.notify_task_activity) {
+      skip("category_disabled");
     } else {
       const taskName = await resolveTaskName();
       await deliver(

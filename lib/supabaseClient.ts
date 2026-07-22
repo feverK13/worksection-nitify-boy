@@ -10,6 +10,12 @@ export interface EmployeeRow {
   telegram_username: string | null;
   link_code: string | null;
   is_linked: boolean;
+  // Per-employee notification category toggles (managed via /settings).
+  // Default true in the DB so already-linked employees keep every category.
+  notify_mentions: boolean;
+  notify_assignment: boolean;
+  notify_task_activity: boolean;
+  notify_status_change: boolean;
 }
 
 export interface TaskStateRow {

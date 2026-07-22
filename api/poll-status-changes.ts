@@ -134,6 +134,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
         const emp = findEmployee(task.user_to?.id);
         if (!emp) {
           skippedReason = "responsible_not_linked";
+        } else if (!emp.notify_status_change) {
+          skippedReason = "category_disabled";
         } else if (!emp.telegram_chat_id) {
           skippedReason = "no_telegram_chat_id";
         } else {

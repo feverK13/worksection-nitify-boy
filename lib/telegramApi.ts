@@ -31,6 +31,58 @@ export async function sendMessage(chatId: number, text: string): Promise<void> {
   }
 }
 
+// Sends a message with an inline keyboard (reply_markup.inline_keyboard).
+export async function sendMessageWithMarkup(
+  chatId: number,
+  text: string,
+  replyMarkup: object
+): Promise<void> {
+  try {
+    await callTelegram("sendMessage", {
+      chat_id: chatId,
+      text,
+      disable_web_page_preview: true,
+      reply_markup: replyMarkup,
+    });
+  } catch (e) {
+    console.error(`sendMessageWithMarkup to chat ${chatId} failed:`, e);
+  }
+}
+
+// Must be called for every callback_query — otherwise the button keeps
+// spinning in the user's Telegram client until it times out.
+export async function answerCallbackQuery(
+  callbackQueryId: string,
+  text?: string
+): Promise<void> {
+  try {
+    await callTelegram("answerCallbackQuery", {
+      callback_query_id: callbackQueryId,
+      text,
+      show_alert: false,
+    });
+  } catch (e) {
+    console.error("answerCallbackQuery failed:", e);
+  }
+}
+
+// Swaps out the inline keyboard on an existing message (no text change).
+export async function editMessageReplyMarkup(
+  chatId: number,
+  messageId: number,
+  replyMarkup: object
+): Promise<void> {
+  try {
+    await callTelegram("editMessageReplyMarkup", {
+      chat_id: chatId,
+      message_id: messageId,
+      reply_markup: replyMarkup,
+    });
+  } catch (e) {
+    console.error("editMessageReplyMarkup failed:", e);
+  }
+}
+
 export function setWebhook(url: string): Promise<unknown> {
   return callTelegram("setWebhook", { url });
 }
