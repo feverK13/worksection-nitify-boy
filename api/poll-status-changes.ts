@@ -25,6 +25,17 @@ const ANYONE_ID = "2";
 // smarter scope (e.g. per-project sharding across runs).
 const MAX_TASKS_PER_RUN = 400;
 
+// A tasks_state row that's missing when a task is younger than this counts as
+// "just created" (worth a status-set notification) rather than a pre-existing
+// task we're merely seeing on our first poll (silent baseline).
+const NEW_TASK_THRESHOLD_MINUTES = 15;
+
+function parseWsDate(value: string | undefined): Date | null {
+  if (!value) return null;
+  const d = new Date(value.replace(" ", "T"));
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
 function isAuthorized(req: VercelRequest): boolean {
   const secret = process.env.POLL_SECRET;
   if (!secret) {
@@ -119,18 +130,45 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       const saved = savedByTaskId.get(taskId) ?? null;
       const savedStatusId = saved?.status_tag_id ?? null;
 
-      // A real change requires a previously-recorded baseline that differs from
-      // now. If savedStatusId is null (row absent, or column freshly added and
-      // never populated) we only record a baseline this pass — never notify.
-      // NOTE: this also fires when a status is cleared entirely
-      // (current -> null); rendered as "(без статусу)". Transient tag drops in
-      // the API would look like a change here — acceptable given how rare polls are.
-      const isRealChange = saved != null && savedStatusId !== null && savedStatusId !== currentStatusId;
+      // Three distinct cases:
+      // 1. No prior tasks_state row, task is older than the threshold — this
+      //    is just the first time OUR polling has seen a pre-existing task.
+      //    Record a silent baseline, never notify.
+      // 2. No prior row, task is younger than the threshold — it was just
+      //    created. If it already carries a status tag, announce it.
+      // 3. A prior row exists (even with a null status) — any difference from
+      //    the current status, including a status being cleared entirely
+      //    (current -> null, rendered "(без статусу)"), is a real change.
+      let caseType: string;
+      let shouldNotify = false;
+      let notifyKind: "changed" | "new_status" | null = null;
+
+      if (saved == null) {
+        const addedAt = parseWsDate(task.date_added);
+        const ageMinutes = addedAt ? (Date.now() - addedAt.getTime()) / 60000 : Infinity;
+        const isNewTask = ageMinutes <= NEW_TASK_THRESHOLD_MINUTES;
+
+        if (!isNewTask) {
+          caseType = "baseline_recorded_existing_task";
+        } else if (currentStatusId != null) {
+          caseType = "new_task_with_status";
+          shouldNotify = true;
+          notifyKind = "new_status";
+        } else {
+          caseType = "new_task_no_status";
+        }
+      } else if (currentStatusId !== savedStatusId) {
+        caseType = "existing_task_change";
+        shouldNotify = true;
+        notifyKind = "changed";
+      } else {
+        caseType = "existing_task_unchanged";
+      }
 
       let notified = false;
-      let skippedReason: string | null = null;
+      let skippedReason: string | null = shouldNotify ? null : caseType;
 
-      if (isRealChange) {
+      if (shouldNotify) {
         const emp = findEmployee(task.user_to?.id);
         if (!emp) {
           skippedReason = "responsible_not_linked";
@@ -139,20 +177,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
         } else if (!emp.telegram_chat_id) {
           skippedReason = "no_telegram_chat_id";
         } else {
-          const oldLabel = saved?.status_tag_name ?? "(без статусу)";
-          const newLabel = currentStatusName ?? "(без статусу)";
           const url = `https://${domain}${task.page}`;
-          await sendMessage(
-            emp.telegram_chat_id,
-            `🔄 Статус задачі змінено: «${oldLabel}» → «${newLabel}»\nЗадача: «${task.name}»\n🔗 ${url}`
-          );
+          const message =
+            notifyKind === "new_status"
+              ? `🔄 У задачі «${task.name}» встановлено статус «${currentStatusName}»\n🔗 ${url}`
+              : `🔄 У задачі «${task.name}» статус змінено: «${saved?.status_tag_name ?? "(без статусу)"}» → «${
+                  currentStatusName ?? "(без статусу)"
+                }»\n🔗 ${url}`;
+          await sendMessage(emp.telegram_chat_id, message);
           notified = true;
           notifiedCount++;
         }
-      } else if (saved == null || savedStatusId === null) {
-        skippedReason = "baseline_recorded";
-      } else {
-        skippedReason = "status_unchanged";
       }
 
       // Always refresh stored state (baseline for the next poll).
@@ -180,7 +215,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
           savedStatusName: saved?.status_tag_name ?? null,
           currentStatusId,
           currentStatusName,
-          realChange: isRealChange,
+          caseType,
           notified,
           skippedReason,
         })

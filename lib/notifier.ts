@@ -261,7 +261,7 @@ export async function processWebhookEvent(
         } else {
           await deliver(
             emp,
-            `✅ Вас призначено відповідальним за задачу «${taskName}»\n👤 ${actorName}\n🔗 ${link}`
+            `✅ У задачі «${taskName}» вас призначено відповідальним\n👤 ${actorName}\n🔗 ${link}`
           );
           notified.add(emp.ws_user_id);
         }
@@ -280,7 +280,7 @@ export async function processWebhookEvent(
         } else {
           await deliver(
             emp,
-            `➖ З вас знято відповідальність за задачу «${taskName}»\n👤 ${actorName}\n🔗 ${link}`
+            `➖ У задачі «${taskName}» з вас знято статус відповідального\n👤 ${actorName}\n🔗 ${link}`
           );
           notified.add(emp.ws_user_id);
         }
@@ -308,7 +308,7 @@ export async function processWebhookEvent(
         const taskName = await resolveTaskName();
         await deliver(
           emp,
-          `✅ Вас призначено відповідальним за задачу «${taskName}»\n👤 ${actorName}\n🔗 ${link}`
+          `✅ У задачі «${taskName}» вас призначено відповідальним\n👤 ${actorName}\n🔗 ${link}`
         );
         notified.add(emp.ws_user_id);
       }
@@ -317,7 +317,7 @@ export async function processWebhookEvent(
 
   // --- Rule 1: mentions (full_name substring in new.text) ---
   if (rawText.trim()) {
-    const mentionLabel = objType === "comment" ? "у коментарі до задачі" : "у задачі";
+    const mentionSuffix = objType === "comment" ? " у коментарі" : "";
     const snippet = buildSnippet(rawText);
     for (const emp of resolveMentions(rawText, employees)) {
       const wsId = emp.ws_user_id;
@@ -341,7 +341,7 @@ export async function processWebhookEvent(
       const taskName = await resolveTaskName();
       await deliver(
         emp,
-        `🔔 Вас згадали ${mentionLabel} «${taskName}»\n👤 ${actorName}\n💬 ${snippet}\n🔗 ${link}`
+        `🔔 У задачі «${taskName}» вас згадали${mentionSuffix}\n👤 ${actorName}\n💬 ${snippet}\n🔗 ${link}`
       );
       notified.add(wsId);
     }
@@ -403,7 +403,7 @@ export async function processWebhookEvent(
         // your task"). 💬 always shown — even if the text is just a filename.
         const snippet = buildSnippet(rawText);
         message =
-          `🔔 Новий коментар у задачі «${taskName}», де ви відповідальний\n` +
+          `🔔 У задачі «${taskName}», де ви відповідальний, новий коментар\n` +
           `👤 ${actorName}\n💬 ${snippet}\n🔗 ${link}`;
       } else if (action === "update" && objType === "task" && !userToChanged) {
         // Change 2: detailed diff. This fires EXCLUSIVELY for update_task
@@ -416,14 +416,28 @@ export async function processWebhookEvent(
           skip("no_meaningful_changes");
         } else {
           message =
-            `🔧 Зміни в задачі «${taskName}», де ви відповідальний:\n` +
+            `🔧 У задачі «${taskName}», де ви відповідальний, відбулись зміни:\n` +
             `${changes.map((c) => `• ${c}`).join("\n")}\n` +
             `👤 ${actorName}\n🔗 ${link}`;
         }
-      } else {
-        // close / reopen / delete / task created — unchanged generic format.
+      } else if (action === "close" && objType === "task") {
         message =
-          `📌 ${eventLabel(action, objType)} у задачі «${taskName}», де ви відповідальний\n` +
+          `🔒 У задачі «${taskName}», де ви відповідальний, задачу закрито\n` +
+          `👤 ${actorName}\n🔗 ${link}`;
+      } else if (action === "reopen" && objType === "task") {
+        message =
+          `🔓 У задачі «${taskName}», де ви відповідальний, задачу повторно відкрито\n` +
+          `👤 ${actorName}\n🔗 ${link}`;
+      } else if (action === "delete" && objType === "task") {
+        message =
+          `🗑 У задачі «${taskName}», де ви відповідальний, задачу видалено\n` +
+          `👤 ${actorName}\n🔗 ${link}`;
+      } else {
+        // task created / comment deleted / anything else — generic fallback.
+        const label = eventLabel(action, objType);
+        const lowerLabel = label.charAt(0).toLowerCase() + label.slice(1);
+        message =
+          `📌 У задачі «${taskName}», де ви відповідальний, ${lowerLabel}\n` +
           `👤 ${actorName}\n🔗 ${link}`;
       }
 
