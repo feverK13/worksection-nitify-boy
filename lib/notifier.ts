@@ -55,6 +55,65 @@ function eventLabel(action: string, objType: string): string {
   return `${action} ${objType}`.trim();
 }
 
+// Comment/mention text shown under 💬 — trimmed and capped at ~200 chars.
+// Always returns whatever text is present (even just an attached file's name),
+// so the 💬 line is never dropped for a real comment.
+function buildSnippet(text: string): string {
+  const trimmed = (text ?? "").trim();
+  const snippet = trimmed.slice(0, 200);
+  return trimmed.length > 200 ? `${snippet}...` : snippet;
+}
+
+// --- Change 2: detailed "task updated" diff (update_task, user_to unchanged) ---
+const FIELD_LABELS: Record<string, string> = {
+  priority: "Пріоритет",
+  name: "Назва задачі",
+  text: "Опис",
+  date_to: "Термін виконання",
+  date_end: "Термін виконання",
+  // додавати за потреби, якщо зустрінуться нові поля в реальних payload
+};
+
+const EXCLUDED_KEYS = new Set(["user_to"]); // обробляється окремо, Правило 2
+
+function formatRawValue(v: any): string {
+  if (v === null || v === undefined) return "—";
+  if (typeof v === "object") return JSON.stringify(v);
+  return String(v);
+}
+
+function describeTaskChanges(newObj: any, oldObj: any): string[] {
+  const changes: string[] = [];
+
+  for (const key of Object.keys(newObj || {})) {
+    if (EXCLUDED_KEYS.has(key)) continue;
+
+    const newVal = newObj[key];
+    const oldVal = oldObj?.[key];
+
+    if (key === "custom_fields") {
+      // Вкладена структура: { fieldId: { id, name, type, value, text } }
+      for (const fieldId of Object.keys(newVal || {})) {
+        const newField = newVal[fieldId];
+        const oldField = oldVal?.[fieldId];
+        const newText = newField?.text ?? formatRawValue(newField?.value);
+        const oldText = oldField?.text ?? formatRawValue(oldField?.value);
+        if (newText === oldText) continue;
+        const label = newField?.name || `Поле ${fieldId}`;
+        changes.push(`${label}: ${oldText || "—"} → ${newText || "—"}`);
+      }
+      continue;
+    }
+
+    if (JSON.stringify(newVal) === JSON.stringify(oldVal)) continue;
+
+    const label = FIELD_LABELS[key] || key;
+    changes.push(`${label}: ${formatRawValue(oldVal)} → ${formatRawValue(newVal)}`);
+  }
+
+  return changes;
+}
+
 // A single-line, human-scannable summary of every decision taken for one event.
 // Populated as processWebhookEvent runs and returned to the caller, which logs
 // it once (under DEBUG_LOG_RAW_PAYLOADS) so the whole event reads at a glance.
@@ -259,8 +318,7 @@ export async function processWebhookEvent(
   // --- Rule 1: mentions (full_name substring in new.text) ---
   if (rawText.trim()) {
     const mentionLabel = objType === "comment" ? "у коментарі до задачі" : "у задачі";
-    const snippet = rawText.trim().slice(0, 100);
-    const ellipsis = rawText.trim().length > 100 ? "…" : "";
+    const snippet = buildSnippet(rawText);
     for (const emp of resolveMentions(rawText, employees)) {
       const wsId = emp.ws_user_id;
       if (wsId) trace.mentionedEmployeeIds.push(wsId);
@@ -283,7 +341,7 @@ export async function processWebhookEvent(
       const taskName = await resolveTaskName();
       await deliver(
         emp,
-        `🔔 Вас згадали ${mentionLabel} «${taskName}»\n👤 ${actorName}\n💬 ${snippet}${ellipsis}\n🔗 ${link}`
+        `🔔 Вас згадали ${mentionLabel} «${taskName}»\n👤 ${actorName}\n💬 ${snippet}\n🔗 ${link}`
       );
       notified.add(wsId);
     }
@@ -331,11 +389,48 @@ export async function processWebhookEvent(
       skip("category_disabled");
     } else {
       const taskName = await resolveTaskName();
-      await deliver(
-        emp,
-        `📌 ${eventLabel(action, objType)} у задачі «${taskName}», де ви відповідальний\n👤 ${actorName}\n🔗 ${link}`
+      // Build the message based on WHAT the event is. Comments and plain
+      // task updates get bespoke formats; everything else keeps the 📌 label.
+      const userToChanged = !!(
+        event.new?.user_to &&
+        event.old?.user_to &&
+        String(event.new.user_to.id) !== String(event.old.user_to.id)
       );
-      notified.add(emp.ws_user_id);
+
+      let message: string | null = null;
+      if (objType === "comment") {
+        // Change 1: unified comment format (no mention → "new comment in
+        // your task"). 💬 always shown — even if the text is just a filename.
+        const snippet = buildSnippet(rawText);
+        message =
+          `🔔 Новий коментар у задачі «${taskName}», де ви відповідальний\n` +
+          `👤 ${actorName}\n💬 ${snippet}\n🔗 ${link}`;
+      } else if (action === "update" && objType === "task" && !userToChanged) {
+        // Change 2: detailed diff. This fires EXCLUSIVELY for update_task
+        // without a user_to change — assignment (user_to) is Rule 2's job and
+        // is excluded here both by !userToChanged and by EXCLUDED_KEYS.
+        const changes = describeTaskChanges(event.new, event.old);
+        if (changes.length === 0) {
+          // Worksection sometimes emits an update with no tracked field
+          // actually changing — don't notify at all in that case.
+          skip("no_meaningful_changes");
+        } else {
+          message =
+            `🔧 Зміни в задачі «${taskName}», де ви відповідальний:\n` +
+            `${changes.map((c) => `• ${c}`).join("\n")}\n` +
+            `👤 ${actorName}\n🔗 ${link}`;
+        }
+      } else {
+        // close / reopen / delete / task created — unchanged generic format.
+        message =
+          `📌 ${eventLabel(action, objType)} у задачі «${taskName}», де ви відповідальний\n` +
+          `👤 ${actorName}\n🔗 ${link}`;
+      }
+
+      if (message) {
+        await deliver(emp, message);
+        notified.add(emp.ws_user_id);
+      }
     }
   } else {
     skip("no_responsible");
